@@ -17,7 +17,7 @@ const VOTE = 'ballots-example/vote'
 const CLOSE = 'ballots-example/close'
 
 // The view, the same on every peer: members/<voter>, writers/<writer>, ballots/<id>,
-// votes/<id>/<voter>/<n> (every version a voter wrote) and closes/<id>.
+// votes/<id>/<voter>/<n>/<tie> (every version a voter signed) and closes/<id>.
 
 function open(store) {
   return new Hyperbee(store.get('view'), {
@@ -60,36 +60,33 @@ async function applyBallot(from, { id, question, options, mode, levels }, view) 
   await view.put('ballots/' + id, { id, question, options, mode, levels, by })
 }
 
+// Every version a voter signed is kept, and none is ever replaced. Its tie is the hash of the text
+// they signed, so it names that one version and no one else can pick it.
 async function applyVote({ ballot: id, voter, n, choices, signature }, view, host) {
   const ballot = isId(id) ? await view.get('ballots/' + id) : null
   if (!ballot || !isKey(voter) || !isSignature(signature)) return
-  const vote = { voter, n, choices }
-  if (!ballots.isVote(definitionOf(ballot.value), vote)) return
-  vote.tie = ballots.signable({ ballot: id, n, choices }, { domain: VOTE, scope: hex(host.key) })
-  if (!verify(vote.tie, signature, voter)) return
+  const definition = definitionOf(ballot.value)
+  // checked before signable(), which throws on what isn't a vote
+  if (!ballots.isChoices(definition, choices) || !Number.isSafeInteger(n) || n < 1) return
+  const text = ballots.signable({ ballot: id, voter, n, choices }, signing(VOTE, host))
+  const vote = { voter, n, choices, tie: hex(crypto.hash(b4a.from(text))) }
+  if (!ballots.isVote(definition, vote)) return
+  if (!verify(text, signature, voter)) return
   if (!(await view.get('members/' + voter))) return
-  const key = voteKey(id, voter, n)
-  const same = await view.get(key)
-  // Once the ballot is closed, a stored version is never replaced: a second version with the same
-  // n, written after the close, could otherwise win on its tie and change the closed result.
-  const closed = await view.get('closes/' + id)
-  if (same && (closed || ballots.prefer(same.value, vote) === same.value)) return
-  await view.put(key, { ...vote, signature })
+  const key = voteKey(id, voter, n, vote.tie)
+  if (!(await view.get(key))) await view.put(key, { ...vote, signature })
 }
 
-// The first valid close stands. It is signed by whoever opened the ballot, and lists only votes
+// The first valid close stands. It is signed by whoever opened the ballot, and lists only versions
 // this view holds.
 async function applyClose({ ballot: id, counted, signature }, view, host) {
   const ballot = isId(id) ? await view.get('ballots/' + id) : null
   if (!ballot || !isSignature(signature) || (await view.get('closes/' + id))) return
   if (!ballots.isCut(definitionOf(ballot.value), counted)) return
-  const text = ballots.signableClose(
-    { ballot: id, counted },
-    { domain: CLOSE, scope: hex(host.key) }
-  )
+  const text = ballots.signableClose({ ballot: id, counted }, signing(CLOSE, host))
   if (!verify(text, signature, ballot.value.by)) return
-  for (const [voter, n] of counted) {
-    if (!(await view.get(voteKey(id, voter, n)))) return
+  for (const [voter, n, tie] of counted) {
+    if (!isKey(voter) || !isHash(tie) || !(await view.get(voteKey(id, voter, n, tie)))) return
   }
   await view.put('closes/' + id, { counted, signature })
 }
@@ -115,7 +112,7 @@ async function resultOf(view, id) {
 // package gives for it, so any device can relay it and every peer can check it.
 
 function voteRecord(keyPair, scope, { ballot, voter = hex(keyPair.publicKey), n, choices }) {
-  const text = ballots.signable({ ballot, n, choices }, { domain: VOTE, scope })
+  const text = ballots.signable({ ballot, voter, n, choices }, { domain: VOTE, scope })
   return { type: 'vote', ballot, voter, n, choices, signature: sign(text, keyPair) }
 }
 
@@ -161,14 +158,16 @@ function openBallot(person, ballot) {
 
 async function vote(person, id, choices) {
   const { base, voter } = person
-  const n = ballots.nextN(await votesOf(base.view, id), hex(voter.publicKey))
+  const ballot = definitionOf((await base.view.get('ballots/' + id)).value)
+  const n = ballots.nextN(ballot, await votesOf(base.view, id), hex(voter.publicKey))
   await base.append(voteRecord(voter, hex(base.key), { ballot: id, n, choices }))
   return n
 }
 
 async function close(person, id) {
   const { base, voter } = person
-  const counted = ballots.cutOf(await votesOf(base.view, id))
+  const ballot = definitionOf((await base.view.get('ballots/' + id)).value)
+  const counted = ballots.cutOf(ballot, await votesOf(base.view, id))
   await base.append(closeRecord(voter, hex(base.key), { ballot: id, counted }))
   return counted
 }
@@ -270,8 +269,12 @@ function definitionOf({ options, mode, levels }) {
   return ballots.define({ options: options.length, mode, levels })
 }
 
-function voteKey(id, voter, n) {
-  return `votes/${id}/${voter}/${n}`
+function voteKey(id, voter, n, tie) {
+  return `votes/${id}/${voter}/${n}/${tie}`
+}
+
+function signing(domain, host) {
+  return { domain, scope: hex(host.key) }
 }
 
 function sign(text, keyPair) {
@@ -294,6 +297,10 @@ function isKey(key) {
   return typeof key === 'string' && /^[0-9a-f]{64}$/.test(key)
 }
 
+function isHash(hash) {
+  return typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)
+}
+
 function isSignature(signature) {
   return typeof signature === 'string' && /^[0-9a-f]{128}$/.test(signature)
 }
@@ -304,6 +311,7 @@ function isText(text) {
 
 module.exports = {
   LUNCH,
+  definitionOf,
   open,
   apply,
   votesOf,

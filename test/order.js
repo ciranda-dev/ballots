@@ -29,8 +29,11 @@ test('once closed, votes the close does not list change nothing, wherever they l
     const close = randomClose(random, ballot, voters, records)
     const late = []
     for (let i = int(random, 1, 4); i > 0; i--) {
+      // a late version may share a listed voter and n, never the listed tie
       const vote = randomVote(random, ballot, voters)
-      const listed = close.counted.some(([voter, n]) => voter === vote.voter && n === vote.n)
+      const listed = close.counted.some(
+        ([voter, n, tie]) => voter === vote.voter && n === vote.n && tie === vote.tie
+      )
       if (!listed) late.push(vote)
     }
     const actual = outcome(ballot, shuffle([...records, ...late], random), close)
@@ -64,9 +67,13 @@ function randomVote(random, ballot, voters) {
   const voter = random() < 0.05 ? 7 : pick(random, voters)
   const n = int(random, 0, ballot.maxVersions + 1)
   const choices = random() < 0.15 ? pick(random, JUNK) : randomChoices(random, ballot)
-  // The tie stands for the signed bytes, so it follows from n and the choices: two versions with
-  // the same voter and n differ in their tie exactly when they differ in their choices.
-  return { voter, n, choices, tie: n + ':' + JSON.stringify(choices) }
+  return { voter, n, choices, tie: tieOf(n, choices) }
+}
+
+// The tie stands for a hash of the signed text, so it follows from n and the choices: two versions
+// with the same voter and n differ in their tie exactly when they differ in their choices.
+function tieOf(n, choices) {
+  return n + ':' + JSON.stringify(choices)
 }
 
 function randomChoices(random, ballot) {
@@ -86,10 +93,15 @@ function randomChoices(random, ballot) {
 function randomClose(random, ballot, voters, records) {
   if (random() < 0.5) {
     const seen = shuffle(records, random).slice(0, int(random, 0, records.length))
-    return { counted: ballots.cutOf(seen.filter((vote) => ballots.isVote(ballot, vote))) }
+    return { counted: ballots.cutOf(ballot, seen) }
   }
   const listed = voters.filter(() => random() < 0.6)
-  return { counted: listed.map((voter) => [voter, int(random, 1, ballot.maxVersions)]) }
+  return {
+    counted: listed.map((voter) => {
+      const n = int(random, 1, ballot.maxVersions)
+      return [voter, n, tieOf(n, randomChoices(random, ballot))]
+    })
+  }
 }
 
 // Every order of a few records, or many shuffles of more.

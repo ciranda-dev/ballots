@@ -8,6 +8,7 @@ const ballots = require('..')
 const example = require('../examples/autobase.js')
 
 const { LUNCH, voteRecord, closeRecord, resultOf, vote, close } = example
+const lunchBallot = example.definitionOf(LUNCH)
 
 test('the example: a changed vote, a forged vote, a close and a late vote', async (t) => {
   const lines = []
@@ -47,7 +48,7 @@ test('the same result whatever order the writers replicate in', { timeout: 120_0
     // Then at once: ana's close, a late vote, and a second close ana signed that bruno relays
     const counted = await close(ana, 'lunch')
     await vote(cris, 'lunch', [2])
-    const relayed = [[key(ana), 1]]
+    const relayed = counted.filter(([voter]) => voter === key(ana))
     await bruno.base.append(closeRecord(ana.voter, scope, { ballot: 'lunch', counted: relayed }))
     await merge()
 
@@ -79,9 +80,13 @@ test('the first valid close stands', async (t) => {
   await sync()
 
   const lunch = (counted) => ({ ballot: 'lunch', counted })
-  const both = ballots.cutOf(await example.votesOf(ana.base.view, 'lunch'))
+  const both = ballots.cutOf(lunchBallot, await example.votesOf(ana.base.view, 'lunch'))
+  const unsigned = [key(cris), 1, 'f'.repeat(64)]
+  const otherTie = [both[1][0], both[1][1], 'f'.repeat(64)]
   await bruno.base.append(closeRecord(bruno.voter, scope, lunch(both)))
-  await ana.base.append(closeRecord(ana.voter, scope, lunch([[key(cris), 1]])))
+  await ana.base.append(closeRecord(ana.voter, scope, lunch([unsigned])))
+  await ana.base.append(closeRecord(ana.voter, scope, lunch([both[0], otherTie])))
+  await ana.base.append(closeRecord(ana.voter, scope, lunch(both.map(([v, n]) => [v, n, 'x']))))
   await ana.base.append(closeRecord(ana.voter, 'another-room', lunch(both)))
   await ana.base.append(closeRecord(ana.voter, scope, lunch([...both].reverse())))
   await ana.base.append(closeRecord(ana.voter, scope, { ballot: 'dinner', counted: [] }))
@@ -99,31 +104,55 @@ test('the first valid close stands', async (t) => {
   }
 })
 
-test('two versions with the same n: the smaller tie, until the ballot closes', async (t) => {
+test('two versions with the same n: the smaller tie counts while the ballot is open', async (t) => {
   const { people, sync, scope } = await room(t, 'ties')
   const [ana, bruno, cris] = people
   // cris votes from two devices with the same n: both are signed with cris's key
   const twin = (choices) => voteRecord(cris.voter, scope, { ballot: 'lunch', n: 1, choices })
-  const choiceOfCris = async (person) => {
-    const { stored } = await resultOf(person.base.view, 'lunch')
-    return stored.find((v) => v.voter === key(cris)).choices
-  }
 
   await cris.base.append(twin([2]))
   await bruno.base.append(twin([1]))
   await sync()
-  t.alike(await choiceOfCris(ana), [1], 'the smaller tie is kept')
-  await bruno.base.append(twin([2]))
+  const { stored, tally } = await resultOf(ana.base.view, 'lunch')
+  t.is(stored.length, 2, 'both versions are kept')
+  const smaller = stored.reduce((a, b) => (b.tie < a.tie ? b : a))
+  t.alike(tally.votes[0].choices, smaller.choices, 'the smaller tie counts')
+  const results = await everyPeer(people)
+  for (const result of results) t.alike(result.tally, tally, 'the same on every peer')
+  await ana.base.append(twin([2]))
+  await bruno.base.append(twin([1]))
   await sync()
-  t.alike(await choiceOfCris(ana), [1], 'a copy written again changes nothing')
+  t.alike(await everyPeer(people), results, 'a copy written again changes nothing')
+})
 
-  await close(ana, 'lunch')
-  await bruno.base.append(twin([0]))
+test('a version signed after the close is kept and never counts, with no rule in apply', async (t) => {
+  const { people, sync, scope } = await room(t, 'late')
+  const [ana, bruno, cris] = people
+  const twin = (choices) => voteRecord(cris.voter, scope, { ballot: 'lunch', n: 1, choices })
+  await vote(ana, 'lunch', [0])
+  await cris.base.append(twin([2]))
   await sync()
-  for (const person of people) {
-    t.alike(await choiceOfCris(person), [1], 'a smaller tie after the close changes nothing')
+  const listed = await close(ana, 'lunch')
+  await sync()
+  const before = await everyPeer(people)
+  t.alike(before[0].tally.counts, [1, 0, 1])
+
+  // cris signs every other version with the same n, after the close and from another device
+  for (const choices of [[0], [1], []]) await bruno.base.append(twin(choices))
+  await sync()
+  const after = await everyPeer(people)
+  const tieOfCris = listed.find(([voter]) => voter === key(cris))[2]
+  const late = after[0].stored.filter((v) => v.voter === key(cris) && v.tie !== tieOfCris)
+  t.is(late.length, 3, 'stored on every peer')
+  t.ok(
+    late.some((v) => v.tie < tieOfCris),
+    'one of them has the smaller tie, and would win if the ballot were open'
+  )
+  for (const [i, result] of after.entries()) {
+    t.alike(result.tally, before[i].tally, 'the closed result is the same')
   }
-  t.alike((await resultOf(ana.base.view, 'lunch')).tally.counts, [0, 1, 0])
+  const open = ballots.tally(lunchBallot, after[0].stored)
+  t.not(JSON.stringify(open.counts), JSON.stringify(after[0].tally.counts), 'open, it would')
 })
 
 test('records that break the rules change nothing', async (t) => {
@@ -141,7 +170,12 @@ test('records that break the rules change nothing', async (t) => {
   await ana.base.append(voteRecord(eve, scope, lunch))
   await ana.base.append(voteRecord(bruno.voter, 'another-room', lunch))
   await ana.base.append(voteRecord(bruno.voter, scope, { ...lunch, choices: [3] }))
-  await ana.base.append(voteRecord(bruno.voter, scope, { ...lunch, n: 0 }))
+  await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), n: 0 })
+  await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), n: -1 })
+  await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), choices: [0.5] })
+  await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), choices: 'x' })
+  await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), voter: key(ana) })
+  await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), n: 1001 })
   await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), voter: 'bruno' })
   await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), signature: null })
   await ana.base.append({ ...voteRecord(bruno.voter, scope, lunch), ballot: 'Lunch!' })
