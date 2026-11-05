@@ -38,22 +38,25 @@ const ballots = require('@ciranda/ballots')
 
 const lunch = ballots.define({ options: 3, mode: 'single' })
 
+// `tie` names one signed version: your app derives it, such as a hash of the signed text
 const votes = [
-  { voter: 'ana', n: 1, choices: [0], tie: 'ana-1' },
-  { voter: 'bruno', n: 1, choices: [2], tie: 'bruno-1' }
+  { voter: 'ana', n: 1, choices: [0], tie: '5e1a' },
+  { voter: 'bruno', n: 1, choices: [2], tie: 'c07d' }
 ]
 
 // Bruno changes his vote: one past his highest n
-const change = { voter: 'bruno', n: ballots.nextN(votes, 'bruno'), choices: [1], tie: 'bruno-2' }
+const n = ballots.nextN(lunch, votes, 'bruno') // 2
+const change = { voter: 'bruno', n, choices: [1], tie: '8b2f' }
 if (ballots.isVote(lunch, change)) votes.push(change)
 
 ballots.tally(lunch, votes).counts // [1, 1, 0], while it is open
 
 // Close it with the votes the closer has
-const close = { counted: ballots.cutOf(votes) } // [['ana', 1], ['bruno', 2]]
+const close = { counted: ballots.cutOf(lunch, votes) } // [['ana', 1, '5e1a'], ['bruno', 2, '8b2f']]
 
-// A vote that arrives after the close is kept, and never counts
-votes.push({ voter: 'cris', n: 1, choices: [2], tie: 'cris-1' })
+// Votes signed after the close are kept, and never count: another version of Bruno's n 2, and Cris
+votes.push({ voter: 'bruno', n: 2, choices: [0], tie: '01c4' })
+votes.push({ voter: 'cris', n: 1, choices: [2], tie: 'f93e' })
 
 const result = ballots.tally(lunch, votes, close)
 result.counts // [1, 1, 0]
@@ -67,11 +70,12 @@ ballots.missing(['ana', 'bruno', 'cris'], result.votes) // ['cris']
    ballot. Their newest vote is the one with the highest `n`. A copy of an older vote, written
    again by anyone, changes nothing.
 2. **Two versions with the same `n`**, from the same voter on two devices at once, are decided by
-   comparing their `tie` strings (the signed bytes, in your app). The smaller is kept.
-3. **A close lists exactly the votes it counts**, `[[voter, n], ...]`, built by the closer from
-   the votes they have. From then on, every peer counts those votes and only those.
-4. **A vote that arrives after the close** is kept, so its voter can see it wasn't counted. It
-   never counts, wherever the log puts it.
+   their `tie`: a short string your app derives from each signed version. The smaller is kept, and
+   equal ties fall back to the choices, so the order they arrive in never matters.
+3. **A close lists exactly the versions it counts**, `[[voter, n, tie], ...]`, built by the closer
+   from the votes they have. From then on, every peer counts those versions and only those.
+4. **A vote signed after the close** is kept, so its voter can see it wasn't counted. It never
+   counts, wherever the log puts it, even as another version of an `n` the close lists.
 
 Logical counters instead of clocks: a clock can be wrong or forged, and peers have no shared
 "now". A counter that each voter increases only orders that voter's own votes, which is all a
@@ -80,14 +84,22 @@ ballot needs.
 ## Security
 
 `@ciranda/ballots` is designed for open, named votes among identities your app admits. Votes are
-not secret, and one identity is not one person. What the package does and does not promise, and
-what your app must do for it, is written down in [`docs/threat-model.md`](docs/threat-model.md).
+not secret, and one identity is not one person.
+
+Whoever closes a ballot decides what it counts. A close can leave a voter out, or list an older
+version of their vote than their newest. Every peer then counts the same thing, and the votes it
+left out stay in the log for anyone to see, but no rule here stops it. Let only someone your
+voters trust close a ballot, and show what a close left out.
+
+Your app checks signatures, picks the `tie`, and stores only a close whose every version it holds.
+That list, and what the package does and does not promise, is in
+[`docs/threat-model.md`](docs/threat-model.md).
 
 ## API
 
 ### `define(spec[, limits])`
 
-Returns a frozen ballot definition, or `null` if `spec` is invalid.
+Returns a frozen ballot definition, or `null` if `spec` or `limits` is invalid.
 
 | Field     | Type     | Default    | Description                                         |
 | --------- | -------- | ---------- | --------------------------------------------------- |
@@ -95,40 +107,54 @@ Returns a frozen ballot definition, or `null` if `spec` is invalid.
 | `mode`    | `string` | `'single'` | `'single'`, `'multiple'` or `'scale'`.              |
 | `levels`  | `number` | `0`        | Levels per option on a `'scale'` ballot, 2 or more. |
 
-`limits` overrides the defaults in `LIMITS`:
+`limits` overrides the defaults in `LIMITS`. Each must be a whole number in its range, and
+`minOptions` no more than `maxOptions`:
 
-| Limit         | Default | Description                        |
-| ------------- | ------- | ---------------------------------- |
-| `minOptions`  | `2`     | Fewest options a ballot may have.  |
-| `maxOptions`  | `64`    | Most options a ballot may have.    |
-| `maxLevels`   | `16`    | Most levels on a `'scale'` ballot. |
-| `maxVersions` | `1000`  | Highest `n` a vote may carry.      |
-| `maxVoters`   | `4096`  | Most voters a close may list.      |
+| Limit         | Default | Range      | Description                        |
+| ------------- | ------- | ---------- | ---------------------------------- |
+| `minOptions`  | `2`     | 1 to 256   | Fewest options a ballot may have.  |
+| `maxOptions`  | `64`    | 1 to 256   | Most options a ballot may have.    |
+| `maxLevels`   | `16`    | 2 to 256   | Most levels on a `'scale'` ballot. |
+| `maxVersions` | `1000`  | 1 or more  | Highest `n` a vote may carry.      |
+| `maxVoters`   | `4096`  | 1 to 65536 | Most voters a close may list.      |
+| `maxTie`      | `128`   | 1 to 1024  | Longest `tie`, as its `length`.    |
+
+A voter who reaches `maxVersions` can't change their vote again, and a ballot with more than
+`maxVoters` voters can't be closed with all of them. Pick limits above what your app will see.
 
 ### Votes and closes
 
 A vote is `{ voter, n, choices, tie }`. A close is `{ counted }`, where `counted` is
-`[[voter, n], ...]` sorted by voter.
+`[[voter, n, tie], ...]` sorted by voter.
 
-| Function                          | Returns                                                                                                                    |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `isChoices(ballot, choices)`      | Whether `choices` fits the ballot: one index, increasing indexes, one level per option, or `[]` to take a vote back.       |
-| `isVote(ballot, vote)`            | Whether `vote` has a valid shape for the ballot.                                                                           |
-| `isCut(ballot, counted)`          | Whether a close's list is valid: sorted, no voter twice, within `maxVoters`.                                               |
-| `prefer(a, b)`                    | Of two versions with the same voter and `n`, the one to keep.                                                              |
-| `nextN(votes, voter)`             | The `n` for that voter's next vote.                                                                                        |
-| `cutOf(votes)`                    | What a close written now lists: each voter's newest vote.                                                                  |
-| `counted(ballot, votes[, close])` | The votes that count.                                                                                                      |
-| `tally(ballot, votes[, close])`   | `{ counts, voters, voted, votes }`. On a `'scale'` ballot, `counts[option][level]`.                                        |
-| `missing(eligible, votes)`        | The eligible voters with no counted vote, sorted.                                                                          |
-| `signable(vote[, options])`       | The exact text to sign for a vote: `domain`, `scope`, the ballot, `n`, any `extra` fields, then the choices, one per line. |
-| `signableClose(close[, options])` | The exact text to sign for a close: `domain`, `scope`, the ballot, any `extra` fields, then `counted` as JSON.             |
+Apart from `signable()` and `signableClose()`, none of these throws, whatever it is given. Each
+reads a record's fields once, so what it checked is what it counts. The votes they return are
+copies, `{ voter, n, choices, tie }`.
+
+- Pass the ballot `define()` returned, so your limits hold. Any other ballot, such as one read back
+  from the log, is checked against the ranges above, and nothing counts if it falls outside them.
+- Pass only the votes of that one ballot: a vote's own `ballot` field is never read.
+- A close that isn't a valid list counts nothing.
+
+| Function                          | Returns                                                                                                                 |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `isChoices(ballot, choices)`      | Whether `choices` fits the ballot: one index, increasing indexes, one level per option, or `[]` to take a vote back.    |
+| `isVote(ballot, vote)`            | Whether `vote` has a valid shape for the ballot.                                                                        |
+| `isCut(ballot, counted)`          | Whether a close's list is valid: sorted, no voter twice, within `maxVoters`.                                            |
+| `prefer(a, b)`                    | Of two versions with the same voter and `n`, the one to keep: the smaller `tie`, then the smaller choices.              |
+| `nextN(ballot, votes, voter)`     | The `n` for that voter's next vote, or `null` past `maxVersions`. Only valid votes count.                               |
+| `cutOf(ballot, votes)`            | What a close written now lists: each voter's newest valid vote.                                                         |
+| `counted(ballot, votes[, close])` | The votes that count, sorted by voter.                                                                                  |
+| `tally(ballot, votes[, close])`   | `{ counts, voters, voted, votes }`. On a `'scale'` ballot, `counts[option][level]`.                                     |
+| `missing(eligible, votes)`        | The eligible voters with no counted vote, sorted.                                                                       |
+| `signable(vote[, options])`       | The exact text to sign for a vote: `domain`, `scope`, the ballot, the voter, `n`, any `extra` fields, then the choices. |
+| `signableClose(close[, options])` | The exact text to sign for a close: `domain`, `scope`, the ballot, any `extra` fields, then `counted` as JSON.          |
 
 ### Signing
 
 The package does no cryptography. Sign the text from `signable()` with the voter's own key, and
-check the signature against the same text before you store a vote. The voter is the signing key,
-so the text doesn't repeat it.
+check the signature against the same text before you store a vote. The text names the voter, so a
+signature can't be moved to another spelling of their key.
 
 | Option   | Default                               | Description                                                                         |
 | -------- | ------------------------------------- | ----------------------------------------------------------------------------------- |
@@ -136,43 +162,49 @@ so the text doesn't repeat it.
 | `scope`  | `''`                                  | Where the ballot lives (a room, a group), so a vote can't be replayed elsewhere.    |
 | `extra`  | `[]`                                  | Your app's own fields, signed in order.                                             |
 
-Every field must be a one-line string (numbers are written in decimal), so one field can never be
-read as two. Use the same signed bytes as the vote's `tie`.
+Each field is a one-line string with no lone surrogate, so one field can never be read as two and
+two strings never encode to the same bytes. `extra` is an array of such strings or safe integers,
+written in decimal: `5` and `'5'` sign alike, so check the type of each field yourself.
+
+`signable()` and `signableClose()` throw on anything else. They run when a vote is signed or
+checked, so in `apply` check the record first, as the example does, or catch.
+
+Derive the `tie` from what was signed, such as the hex of a hash of the signed text, and never take
+it from the record. A tie someone else picks lets them pick which of a voter's versions counts.
 
 ### Constants
 
-`MODES`, `LIMITS`.
+`MODES`, `LIMITS`, both frozen.
 
 ## Autobase apps
 
 The functions only need the records your view already holds, so they fit an `apply` handler as
 they are. [`examples/autobase.js`](examples/autobase.js) is a room with three writers and a
-Hyperbee view that keeps every version of every vote under `votes/<ballot>/<voter>/<n>`. Its vote
-handler, with small helpers (`isId`, `verify`, `voteKey`…) defined in the same file:
+Hyperbee view that keeps every version of every vote under `votes/<ballot>/<voter>/<n>/<tie>`, and
+never replaces one. Its vote handler, with small helpers (`isId`, `verify`, `voteKey`…) defined in
+the same file:
 
 ```js
 async function applyVote({ ballot: id, voter, n, choices, signature }, view, host) {
   const ballot = isId(id) ? await view.get('ballots/' + id) : null
   if (!ballot || !isKey(voter) || !isSignature(signature)) return
-  const vote = { voter, n, choices }
-  if (!ballots.isVote(definitionOf(ballot.value), vote)) return
-  vote.tie = ballots.signable({ ballot: id, n, choices }, { domain: VOTE, scope: hex(host.key) })
-  if (!verify(vote.tie, signature, voter)) return
+  const definition = definitionOf(ballot.value)
+  // checked before signable(), which throws on what isn't a vote
+  if (!ballots.isChoices(definition, choices) || !Number.isSafeInteger(n) || n < 1) return
+  const text = ballots.signable({ ballot: id, voter, n, choices }, signing(VOTE, host))
+  const vote = { voter, n, choices, tie: hex(crypto.hash(b4a.from(text))) }
+  if (!ballots.isVote(definition, vote)) return
+  if (!verify(text, signature, voter)) return
   if (!(await view.get('members/' + voter))) return
-  const key = voteKey(id, voter, n)
-  const same = await view.get(key)
-  // Once the ballot is closed, a stored version is never replaced: a second version with the same
-  // n, written after the close, could otherwise win on its tie and change the closed result.
-  const closed = await view.get('closes/' + id)
-  if (same && (closed || ballots.prefer(same.value, vote) === same.value)) return
-  await view.put(key, { ...vote, signature })
+  const key = voteKey(id, voter, n, vote.tie)
+  if (!(await view.get(key))) await view.put(key, { ...vote, signature })
 }
 ```
 
-Its close handler keeps the first valid close of a ballot: signed over `signableClose()` by whoever
-opened the ballot, `isCut`, and every vote it lists already in the view. The tally is
-`ballots.tally()` over the stored votes and the close. The example and its tests run in Node and
-Bare; see [`examples/README.md`](examples/README.md).
+Its close handler keeps the first valid close of a ballot in Autobase's order: signed over
+`signableClose()` by whoever opened the ballot, `isCut`, and every version it lists already in the
+view. The tally is `ballots.tally()` over the stored votes and the close. The example and its tests
+run in Node and Bare; see [`examples/README.md`](examples/README.md).
 
 Autobase orders each node after the nodes its writer had seen, so a close comes after the votes
 it lists and a vote after its ballot. Nothing has to wait in a queue.
