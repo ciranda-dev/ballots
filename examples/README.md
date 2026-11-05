@@ -11,11 +11,10 @@ its `scope`. `apply` takes:
 
 - a member only from the room's creator;
 - a ballot from a member's writer, who may then close it;
-- a vote with a valid signature from a member, that passes `isVote`. Every version is kept by
-  `(ballot, voter, n)`, the smaller `tie` when two have the same `n`, and none is replaced once the
-  ballot is closed;
-- the first valid close of a ballot: signed by whoever opened it, `isCut`, and listing only votes
-  the view holds.
+- a vote with a valid signature from a member, that passes `isVote`. Its `tie` is the hash of the
+  text the voter signed, and every version is kept under `(ballot, voter, n, tie)`, never replaced;
+- the first valid close of a ballot: signed by whoever opened it, `isCut`, and listing only
+  versions the view holds.
 
 The results are counted with `ballots.tally()`.
 
