@@ -1,0 +1,43 @@
+{
+  "name": "@ciranda/ballots",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Open, named ballots over a replicated append-only log: one counted vote per voter, a close that lists exactly what it counts, and a tally every peer computes alike, in any order",
+  "keywords": [
+    "voting",
+    "polls",
+    "ballots",
+    "autobase",
+    "hypercore",
+    "pear",
+    "p2p",
+    "local-first",
+    "crdt"
+  ],
+  "author": "Ciranda (https://ciranda.dev)",
+  "license": "Apache-2.0",
+  "repository": "github:ciranda-dev/ballots",
+  "homepage": "https://github.com/ciranda-dev/ballots#readme",
+  "bugs": "https://github.com/ciranda-dev/ballots/issues",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "docs",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "brittle-node --coverage test/*.js",
+    "lint": "prettier --check ."
+  },
+  "devDependencies": {
+    "brittle": "^4.5.0",
+    "prettier": "^3.9.10",
+    "prettier-config-holepunch": "^2.0.0"
+  }
+}
