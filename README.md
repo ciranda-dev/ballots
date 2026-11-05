@@ -181,9 +181,13 @@ it lists and a vote after its ballot. Nothing has to wait in a queue.
 
 ```sh
 npm install
-npm test     # unit tests with coverage (brittle)
+npm test                      # npm run test:node (with coverage) and npm run test:bare
 npm run lint
+node examples/autobase.js     # the Autobase example
 ```
+
+`npm run test:bare` and `bare examples/autobase.js` need [Bare](https://github.com/holepunchto/bare)
+(`npm install -g bare`). The examples and tests use Holepunch modules as dev dependencies only.
 
 Changes must keep the package free of I/O, clocks and dependencies, and every rule the same on
 every peer. Issues and pull requests are welcome.
