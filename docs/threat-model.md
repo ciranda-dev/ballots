@@ -23,6 +23,9 @@ falls under.
 - Each close is signed over the text from `signableClose()` and comes from someone your app lets
   close the ballot.
 - A vote is stored only if its voter may vote at that place in the log.
+- Once a ballot is closed, a stored vote is never replaced by another version with the same voter
+  and `n`. The close lists `[voter, n]`, not the version, so a version the voter signs after the
+  close could otherwise win on its `tie` and change the closed result.
 
 Without these, the promises below do not hold.
 

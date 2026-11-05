@@ -36,8 +36,15 @@
     "lint": "prettier --check ."
   },
   "devDependencies": {
+    "autobase": "^7.28.2",
+    "autobase-test-helpers": "^3.1.0",
+    "b4a": "^1.9.0",
     "brittle": "^4.5.0",
+    "corestore": "^7.16.1",
+    "hyperbee": "^2.27.3",
+    "hypercore-crypto": "^3.7.0",
     "prettier": "^3.9.10",
-    "prettier-config-holepunch": "^2.0.0"
+    "prettier-config-holepunch": "^2.0.0",
+    "test-tmp": "^1.4.0"
   }
 }

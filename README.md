@@ -146,32 +146,33 @@ read as two. Use the same signed bytes as the vote's `tie`.
 ## Autobase apps
 
 The functions only need the records your view already holds, so they fit an `apply` handler as
-they are. A sketch with a HyperDB-style view that keeps every version of every vote by
-`(ballot, voter, n)` and one close per ballot. `signedBy`, `isMember` and `mayClose` are your app's:
+they are. [`examples/autobase.js`](examples/autobase.js) is a room with three writers and a
+Hyperbee view that keeps every version of every vote under `votes/<ballot>/<voter>/<n>`. Its vote
+handler, with small helpers (`isId`, `verify`, `voteKey`…) defined in the same file:
 
 ```js
-async function applyVote(vote, view) {
-  if (!signedBy(vote)) return
-  if (!(await isMember(view, vote.voter))) return
-  const ballot = await view.get('ballots', { id: vote.ballot })
-  if (!ballot || !ballots.isVote(ballot.definition, vote)) return
-  const same = await view.get('votes', { ballot: vote.ballot, voter: vote.voter, n: vote.n })
-  if (same && ballots.prefer(same, vote) === same) return
-  await view.insert('votes', vote)
-}
-
-async function applyClose(close, view) {
-  if (!signedBy(close) || !(await mayClose(view, close))) return
-  const ballot = await view.get('ballots', { id: close.ballot })
-  if (!ballot || (await view.get('closes', { ballot: close.ballot }))) return
-  if (!ballots.isCut(ballot.definition, close.counted)) return
-  for (const [voter, n] of close.counted) {
-    if (!(await view.get('votes', { ballot: close.ballot, voter, n }))) return
-    if (!(await isMember(view, voter))) return
-  }
-  await view.insert('closes', close)
+async function applyVote({ ballot: id, voter, n, choices, signature }, view, host) {
+  const ballot = isId(id) ? await view.get('ballots/' + id) : null
+  if (!ballot || !isKey(voter) || !isSignature(signature)) return
+  const vote = { voter, n, choices }
+  if (!ballots.isVote(definitionOf(ballot.value), vote)) return
+  vote.tie = ballots.signable({ ballot: id, n, choices }, { domain: VOTE, scope: hex(host.key) })
+  if (!verify(vote.tie, signature, voter)) return
+  if (!(await view.get('members/' + voter))) return
+  const key = voteKey(id, voter, n)
+  const same = await view.get(key)
+  // Once the ballot is closed, a stored version is never replaced: a second version with the same
+  // n, written after the close, could otherwise win on its tie and change the closed result.
+  const closed = await view.get('closes/' + id)
+  if (same && (closed || ballots.prefer(same.value, vote) === same.value)) return
+  await view.put(key, { ...vote, signature })
 }
 ```
+
+Its close handler keeps the first valid close of a ballot: signed over `signableClose()` by whoever
+opened the ballot, `isCut`, and every vote it lists already in the view. The tally is
+`ballots.tally()` over the stored votes and the close. The example and its tests run in Node and
+Bare; see [`examples/README.md`](examples/README.md).
 
 Autobase orders each node after the nodes its writer had seen, so a close comes after the votes
 it lists and a vote after its ballot. Nothing has to wait in a queue.
