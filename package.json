@@ -1,6 +1,6 @@
 {
   "name": "@ciranda/ballots",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Open, named ballots over a replicated append-only log: one counted vote per voter, a close that lists exactly what it counts, and a tally every peer computes alike, in any order",
   "keywords": [
     "voting",
