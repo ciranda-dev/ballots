@@ -15,7 +15,10 @@
   ],
   "author": "Ciranda (https://ciranda.dev)",
   "license": "Apache-2.0",
-  "repository": "github:ciranda-dev/ballots",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ciranda-dev/ballots.git"
+  },
   "homepage": "https://github.com/ciranda-dev/ballots#readme",
   "bugs": "https://github.com/ciranda-dev/ballots/issues",
   "main": "index.js",
